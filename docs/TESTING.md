@@ -13,6 +13,7 @@
 | `tests/orders.test.js` | 從購物車建單、空購物車建單失敗、未登入建單 401、訂單清單、訂單詳情、404 | 依賴 `registerUser()` 建立新會員 + 商品存在；**依賴前一個測試檔（`cart.test.js`）已驗證的購物車行為，但不共用資料**（各測試檔各自獨立 `beforeAll` 建立自己的使用者與購物車狀態） |
 | `tests/adminProducts.test.js` | 後台商品清單、新增、編輯、刪除、驗證刪除後 404、非 admin 拒絕存取、無 token 拒絕存取 | 依賴 `getAdminToken()` 登入 seed 管理員 |
 | `tests/adminOrders.test.js` | 後台訂單清單、依狀態篩選、後台訂單詳情（含 user 資訊）、非 admin 拒絕存取 | 依賴 `beforeAll` 內完整跑一次「註冊會員 → 加入購物車 → 建立訂單」流程產生至少一筆訂單 |
+| `tests/ecpayCrypto.test.js` | 綠界 `CheckMacValue` 簽章產生與驗證（`src/utils/ecpayCrypto.js`），以官方公開測試向量驗證 SHA256 輸出正確、驗證通過/失敗兩種情境 | 無——純函式單元測試，不觸碰資料庫，也不呼叫任何 HTTP（不依賴 `app`/`request`，甚至不 `require('./setup')`） |
 
 ## 執行順序與依賴關係
 
@@ -43,6 +44,8 @@ fileParallelism: false,
 3. 每個測試檔內部的 `it` 區塊也常有**執行順序依賴**（同一 `describe` 內用 `let` 變數在前一個 `it` 賦值、後一個 `it` 讀取，例如 `cart.test.js` 先 `should add product to cart` 存下 `cartItemId`，後續 `should update cart item quantity` 才能用），Vitest 預設同一檔案內 `it` 依撰寫順序執行，**新增測試時務必注意插入位置**，不要插在「產生資料」與「使用資料」的測試中間。
 
 若要新增測試檔，且它會依賴其他測試檔已產生的資料狀態，務必把檔名加進 `vitest.config.js` 的 `sequence.files` 陣列中正確的位置；若不小心漏加，Vitest 仍會執行該檔案（Vitest 預設會找到所有 `tests/**` 底下的測試檔），但**執行順序相對其他檔案是未定義的**，可能導致間歇性失敗。
+
+`tests/ecpayCrypto.test.js` 是唯一**未**加進 `sequence.files` 的例外：因為它是完全獨立的純函式單元測試（不共用 `database.sqlite`、不透過 `supertest` 發請求），與其他測試檔之間沒有執行順序依賴，放在陣列任何位置或完全不放都不影響正確性。
 
 `hookTimeout: 10000`：`beforeAll`/`afterAll` 等 hook 的逾時上限拉長到 10 秒（預設 5 秒可能不夠，因為部分 `beforeAll` 內要跑好幾個 await 的 supertest 請求鏈，如 `adminOrders.test.js` 的註冊→加購物車→建訂單）。
 
@@ -125,3 +128,12 @@ describe('Xxx API', () => {
 - **購物車 POST 是累加、PATCH 是覆寫**：撰寫涉及購物車數量的測試時，務必留意 `POST /api/cart` 對同一商品重複呼叫會累加數量而非重設，若測試預期是「設定為固定值」應該用 `PATCH /api/cart/:itemId`（見 FEATURES.md 購物車章節）。
 - **訂單一旦 `failed` 無法轉為 `paid`**：`PATCH /api/orders/:id/pay` 只接受 `status === 'pending'` 的訂單，撰寫「先付款失敗、再付款成功」的測試情境前，需確認這在目前系統下**是不被支援的**（會回 400 `INVALID_STATUS`），不要誤判為 bug。
 - **後台商品新增/編輯的型別要求比其他端點嚴格**：`price`/`stock` 必須是 JSON 數字型別（`Number.isInteger` 檢查），測試中若用 `.send({ price: '500' })`（字串）會得到非預期的 400，需傳 `.send({ price: 500 })`（數字），與購物車/訂單端點寬容接受字串數字（`parseInt`）的行為不同。
+
+## 待辦：尚無測試覆蓋的端點
+
+以下端點目前僅靠手動測試與（部分）一次性對 ECPay 真實 stage API 的手動驗證確認過行為，**沒有**寫進 `tests/` 的自動化整合測試，新增測試時請留意：
+
+- `PATCH /api/orders/:id/pay`（模擬付款，開發用遺留端點，前端已不呼叫，見 FEATURES.md）
+- `POST /api/orders/:id/checkout`（產生 ECPay 付款表單）——**不需要** mock 網路請求，此端點只組裝參數與計算 `CheckMacValue`，不會實際呼叫 ECPay，可直接用既有的 `registerUser()` + 建立訂單流程測試回應形狀與 `merchant_trade_no` 是否寫回資料庫。
+- `POST /api/orders/:id/confirm-payment`（主動查詢 ECPay 付款狀態）——**需要** mock `global.fetch`（`src/services/ecpayService.js` 的 `queryTradeInfo` 用 Node 內建 `fetch` 呼叫 `Cashier/QueryTradeInfo/V5`），否則測試會實際打向 ECPay stage 環境，變成依賴外部網路且結果不穩定（測試帳號的交易狀態會隨時間改變）。Mock 時要回傳符合 `ecpayCrypto.generateCheckMacValue` 規則的 `CheckMacValue`，否則會在 `verifyCheckMacValue` 這關被擋下。
+- `POST /api/ecpay/notify`（接收綠界付款通知）——不需要真的連上 ECPay，可直接用 `ecpayCrypto.generateCheckMacValue` 產生一組合法簽章的假 payload 呼叫此端點，驗證簽章驗證邏輯、`RtnCode` 分支、以及對同一 `MerchantTradeNo` 重複呼叫時的冪等更新行為（`UPDATE` 而非 `INSERT`，且已 `paid` 的訂單不會被覆寫）。

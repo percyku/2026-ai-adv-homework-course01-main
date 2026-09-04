@@ -18,7 +18,10 @@
 | 訂單 | `/api/orders` | POST | JWT | ✅ |
 | 訂單 | `/api/orders` | GET | JWT | ✅ |
 | 訂單 | `/api/orders/:id` | GET | JWT | ✅ |
-| 訂單 | `/api/orders/:id/pay`（模擬付款） | PATCH | JWT | 🟡（無測試） |
+| 訂單 | `/api/orders/:id/pay`（模擬付款，開發用，前端已不呼叫） | PATCH | JWT | 🟡（無測試） |
+| 訂單 | `/api/orders/:id/checkout`（產生 ECPay 付款表單） | POST | JWT | 🟡（無測試） |
+| 訂單 | `/api/orders/:id/confirm-payment`（主動查詢 ECPay 付款狀態） | POST | JWT | 🟡（無測試） |
+| ECPay | `/api/ecpay/notify`（接收綠界付款通知） | POST | 無（綠界 callback） | 🟡（無測試；本機環境無法被觸發） |
 | 後台商品 | `/api/admin/products` | GET | JWT + admin | ✅ |
 | 後台商品 | `/api/admin/products` | POST | JWT + admin | ✅ |
 | 後台商品 | `/api/admin/products/:id` | PUT | JWT + admin | ✅ |
@@ -26,7 +29,7 @@
 | 後台訂單 | `/api/admin/orders` | GET | JWT + admin | ✅ |
 | 後台訂單 | `/api/admin/orders/:id` | GET | JWT + admin | ✅ |
 | 前台頁面（9 個路由） | `pageRoutes.js` | GET | 無（前端導頁） | ✅ |
-| 綠界金流（ECPay）串接 | — | — | — | ⬜ 未實作，僅 `.env.example` 有預留變數，見 [ARCHITECTURE.md](./ARCHITECTURE.md#金流第三方整合) |
+| 綠界金流（ECPay）串接 | — | — | — | 🟡 已實作（AIO 全方位金流，見上方三個端點），CheckMacValue 加解密有單元測試覆蓋，但結帳/查詢/callback 三個端點本身尚無整合測試，見 [ARCHITECTURE.md](./ARCHITECTURE.md#金流第三方整合) |
 | 訪客購物車併入會員購物車（登入後合併） | — | — | — | ⬜ 未實作，訪客與會員購物車完全獨立、不會自動合併 |
 | 商品評論/收藏/搜尋 | — | — | — | ⬜ 未實作 |
 
@@ -140,14 +143,52 @@
 - 查詢條件同時比對 `id` 與 `user_id`，確保使用者只能看自己的訂單；查無（含「訂單存在但屬於別人」的情況）→ 統一 404，不洩漏訂單是否存在。
 - 回傳完整訂單欄位（含 `recipient_*`）+ `items`（`order_items` 全部欄位）。
 
-### `PATCH /api/orders/:id/pay`（模擬付款）
+### `PATCH /api/orders/:id/pay`（模擬付款，開發用遺留端點）
 
-- **這不是真正的金流串接**，純粹是教學用的狀態切換端點，見 ARCHITECTURE.md「金流／第三方整合」章節說明。
+- **這不是真正的金流串接**，純粹是教學用的狀態切換端點。**前端已改用下方的 ECPay 結帳流程**，`order-detail.js` 不再呼叫此端點，目前僅作為手動測試訂單狀態切換的開發工具保留在後端。
 - 必填 body `action`，僅接受 `'success'` 或 `'fail'`，對應到 `actionMap = { success: 'paid', fail: 'failed' }`；其他值 → 400 `VALIDATION_ERROR`。
 - 訂單需存在且屬於自己，否則 404。
-- **只有 `status === 'pending'` 的訂單才能付款**，已經是 `paid` 或 `failed` 的訂單再次呼叫此端點會回 400 `INVALID_STATUS`（`訂單狀態不是 pending，無法付款`）——代表**沒有「付款失敗後重試」的路徑**：一旦訂單被標記 `failed`，它會永遠卡在 `failed`，無法再次呼叫此端點轉為 `paid`（需要在資料庫手動處理或未來新增「重新結帳」功能，目前系統沒有此功能）。
+- **只有 `status === 'pending'` 的訂單才能付款**，已經是 `paid` 或 `failed` 的訂單再次呼叫此端點會回 400 `INVALID_STATUS`（`訂單狀態不是 pending，無法付款`）——與下方 `checkout` 端點不同，**沒有「付款失敗後重試」的路徑**：一旦訂單被標記 `failed`，無法再次呼叫此端點轉為 `paid`。
 - 成功回傳更新後的訂單（含 `items`），`message` 依 `action` 動態給 `付款成功`／`付款失敗`。
-- 前端流程（`views/pages/order-detail.ejs` + `public/js/pages/order-detail.js`）：頁面上有「模擬付款成功」「模擬付款失敗」兩顆按鈕直接呼叫這支 API，屬於**開發／教學用的假付款頁面**，並非真實使用者會看到的金流頁（沒有導去第三方收銀台再導回）。
+
+### `POST /api/orders/:id/checkout`（產生 ECPay 付款表單）
+
+檔案：`src/routes/orderRoutes.js` + `src/services/ecpayService.js`。真正的付款入口，取代上方的模擬付款按鈕。
+
+- 訂單需存在、屬於自己，否則 404。
+- **`status !== 'paid'` 即可呼叫**（`pending` 或 `failed` 皆可）——與模擬付款端點不同，這裡**允許付款失敗後重新結帳**：每次呼叫都會呼叫 `ecpayService.buildCheckoutParams` 重新產生一組新的 `MerchantTradeNo`（`T${Date.now()}`）並**覆寫**訂單的 `merchant_trade_no` 欄位，等於每次點「前往綠界付款」都是全新的一筆 ECPay 交易，不會因為上一筆失敗而卡住。
+- 已 `paid` 的訂單再次呼叫 → 400 `INVALID_STATUS`（`訂單已付款，無法重新結帳`）。
+- 組裝參數重點：
+  - `TotalAmount` 直接取訂單的 `total_amount`；`ItemName` 由該訂單所有 `order_items` 的 `product_name` 以 `#` 串接、截斷至 200 字元。
+  - `ChoosePayment: 'ALL'` + `IgnorePayment: 'ATM#CVS#BARCODE#ApplePay#TWQR#BNPL#WeiXin'`——只留信用卡與網路 ATM（WebATM）給消費者選（ECPay `ChoosePayment` 一次只能指定單一方式，要提供多選只能用 `ALL` 再用 `IgnorePayment` 排除，`DigitalPayment` 依規格無法被排除）。
+  - `ReturnURL` 指向 `/api/ecpay/notify`（本機無法被綠界連線觸及，見下方）；`ClientBackURL` 指向 `${FRONTEND_URL}/orders/{id}`（消費者付款完成後瀏覽器會被導回此頁）。
+  - **未使用 `SimulatePaid`**：官方文件記載測試環境可加此參數略過刷卡，但實測共用測試帳號 `3002607` 對此參數回傳 `10100050 Parameter Error`，因此改為導向真實付款收銀台，測試時用官方測試卡 `4311-9522-2222-2222` ＋ 3D 驗證碼 `1234` 完成付款。
+- 成功回傳 `{ actionUrl, params }`（**非** ECPay 回應本身，是要送去 ECPay 的請求參數），前端拿這兩個值動態組一個 `<form method="POST">` 並 `form.submit()` 整頁跳轉——依規格**不可用 `fetch`／`iframe`** 呼叫綠界付款頁。
+
+### `POST /api/orders/:id/confirm-payment`（主動查詢 ECPay 付款狀態）
+
+檔案：`src/routes/orderRoutes.js` + `src/services/ecpayService.js`。因本機環境無法接收綠界的 Server Notify，付款結果改由這支端點**主動查詢**驗證。
+
+- 訂單需存在、屬於自己，否則 404。
+- 訂單必須已呼叫過 `checkout`（`merchant_trade_no` 不為 NULL），否則 400 `NOT_CHECKED_OUT`。
+- 呼叫 `ecpayService.queryTradeInfo(merchant_trade_no)` 向綠界 `QueryTradeInfo/V5` 查詢，該函式內部會驗證回應的 `CheckMacValue`，失敗則此端點回 502 `ECPAY_QUERY_FAILED`（可能是網路問題，或本次查詢的簽章不符）。
+- 依查得的 `TradeStatus` 更新訂單：
+  - `'1'`（已付款）→ `status = 'paid'`，同時寫入 `ecpay_trade_no`（綠界 `TradeNo`）、`payment_method`（`PaymentType`，如 `Credit_CreditCard`）、`paid_at`（`datetime('now')`）。
+  - `'0'`（尚未付款）→ **維持 `pending`**，不視為失敗，允許使用者稍後再查一次或重新前往付款。
+  - 其他值（例如 `10200095` 交易未成立，通常是建單參數被 ECPay 拒絕、交易根本沒成立）→ `status = 'failed'`。
+- 成功一律回傳更新後的完整訂單（含 `items`），前端據此更新畫面上的付款狀態提示。
+- 前端流程（`views/pages/order-detail.ejs` + `public/js/pages/order-detail.js`）：頁面 `onMounted` 時若訂單為 `pending` 且已有 `merchant_trade_no`（代表剛從綠界導回），會**自動呼叫一次**此端點；同時提供「重新查詢付款狀態」按鈕讓使用者手動觸發（涵蓋自動查詢失敗、或使用者中途關閉分頁後重新回來查看的情況）。
+
+---
+
+## 綠界 ECPay 金流整合
+
+詳細架構決策（本機無法接收 Server Notify、`ChoosePayment`/`IgnorePayment` 限制、`SimulatePaid` 在共用測試帳號上不可用等）見 [ARCHITECTURE.md「金流／第三方整合」](./ARCHITECTURE.md#金流第三方整合)。此處僅摘要使用者可觀察到的行為：
+
+1. 訂單詳情頁（`status` 為 `pending` 或 `failed`）顯示「前往綠界付款」按鈕，點擊後整頁跳轉到 ECPay AIO 付款收銀台，可選信用卡或網路 ATM。
+2. 消費者用官方測試卡 `4311-9522-2222-2222`（任意 3 碼安全碼、任意未來到期日、3D 驗證碼 `1234`）完成付款後，瀏覽器被導回訂單詳情頁。
+3. 頁面自動（或使用者手動點「重新查詢付款狀態」）向後端觸發一次主動查詢，確認為已付款後畫面顯示付款成功訊息，資料庫的 `orders.status` 變為 `paid`。
+4. `src/utils/ecpayCrypto.js` 的 CheckMacValue 簽章實作已用 ECPay 官方公開測試向量驗證正確（見 `tests/ecpayCrypto.test.js`），且已對 ECPay 真實 stage API 做過端對端驗證（`checkout` 產生的參數被正常接受、`confirm-payment` 對真實交易查詢並正確解析 `TradeStatus`）。
 
 ---
 

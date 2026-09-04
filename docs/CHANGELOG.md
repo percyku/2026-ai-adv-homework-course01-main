@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- 串接綠界 ECPay AIO 全方位金流，取代原本 `PATCH /api/orders/:id/pay` 的模擬付款；訂單詳情頁新增「前往綠界付款」與「重新查詢付款狀態」按鈕（模擬付款端點仍保留在後端作為開發工具，前端已不再呼叫）。
+  - 新增 `POST /api/orders/:id/checkout`（產生 ECPay AIO 付款表單參數，允許 `pending`/`failed` 訂單重新結帳）與 `POST /api/orders/:id/confirm-payment`（本地端主動呼叫綠界 `QueryTradeInfo` API 查詢付款狀態並更新訂單）。因本專案僅在本機執行、無法接收綠界的 Server-to-Server `ReturnURL` 通知，付款結果改由此端點主動查詢確認。
+  - 新增 `POST /api/ecpay/notify`（`src/routes/ecpayRoutes.js`），供未來部署到可公開存取網域時接收綠界付款結果通知；本機開發環境無法被觸及。
+  - 新增 `src/utils/ecpayCrypto.js`（CheckMacValue SHA256 簽章產生／驗證）與 `src/services/ecpayService.js`（組裝付款參數、查詢交易狀態）。
+  - `orders` 表新增 `merchant_trade_no`／`ecpay_trade_no`／`payment_method`／`paid_at` 四個欄位。
+  - 付款方式設定為 `ChoosePayment=ALL` + `IgnorePayment` 排除超商代碼／條碼／ATM 取號／Apple Pay／TWQR／BNPL／微信，讓消費者可自選信用卡或網路 ATM（WebATM）。
+  - 新增 `tests/ecpayCrypto.test.js`，以 ECPay 官方公開測試向量驗證 CheckMacValue 簽章邏輯正確性；`checkout`／`confirm-payment`／`notify` 三個端點本身尚無自動化測試，待辦見 TESTING.md。
+
+### 已知限制
+
+- 官方文件記載測試環境可在建單參數加 `SimulatePaid=1` 略過刷卡直接完成模擬付款，但實測共用測試帳號 `3002607` 對此參數回傳 `10100050 Parameter Error`（該帳號未開通此功能），因此未採用；本機測試需用官方測試卡 `4311-9522-2222-2222` 走完整刷卡流程。
+
 ### 文件
 
 - 建立完整專案文件體系：`CLAUDE.md` 及 `docs/README.md`、`docs/ARCHITECTURE.md`、`docs/DEVELOPMENT.md`、`docs/FEATURES.md`、`docs/TESTING.md`、`docs/CHANGELOG.md`，以及 `docs/plans/`（含 `archive/`）目錄。

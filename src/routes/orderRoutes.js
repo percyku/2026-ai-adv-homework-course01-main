@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
+const ecpayService = require('../services/ecpayService');
 
 const router = express.Router();
 
@@ -412,6 +413,126 @@ router.patch('/:id/pay', (req, res) => {
     data: { ...updated, items },
     error: null,
     message: action === 'success' ? '付款成功' : '付款失敗'
+  });
+});
+
+/**
+ * @openapi
+ * /api/orders/{id}/checkout:
+ *   post:
+ *     summary: 建立綠界 ECPay 付款表單參數
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: 成功，回傳供前端組表單導向綠界的參數
+ *       400:
+ *         description: 訂單已付款，無法重新結帳
+ *       404:
+ *         description: 訂單不存在
+ */
+router.post('/:id/checkout', (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, req.user.userId);
+  if (!order) {
+    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+  }
+
+  if (order.status === 'paid') {
+    return res.status(400).json({
+      data: null,
+      error: 'INVALID_STATUS',
+      message: '訂單已付款，無法重新結帳'
+    });
+  }
+
+  const orderItems = db.prepare(
+    'SELECT product_name FROM order_items WHERE order_id = ?'
+  ).all(order.id);
+
+  const { actionUrl, params, merchantTradeNo } = ecpayService.buildCheckoutParams(order, orderItems);
+
+  db.prepare('UPDATE orders SET merchant_trade_no = ? WHERE id = ?').run(merchantTradeNo, order.id);
+
+  res.json({
+    data: { actionUrl, params },
+    error: null,
+    message: '成功'
+  });
+});
+
+/**
+ * @openapi
+ * /api/orders/{id}/confirm-payment:
+ *   post:
+ *     summary: 主動向綠界查詢付款狀態並更新訂單（本地端無法接收 ReturnURL 時使用）
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: 成功，回傳更新後的訂單
+ *       400:
+ *         description: 訂單尚未進行過結帳
+ *       404:
+ *         description: 訂單不存在
+ *       502:
+ *         description: 呼叫綠界查詢 API 失敗
+ */
+router.post('/:id/confirm-payment', async (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, req.user.userId);
+  if (!order) {
+    return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
+  }
+
+  if (!order.merchant_trade_no) {
+    return res.status(400).json({
+      data: null,
+      error: 'NOT_CHECKED_OUT',
+      message: '訂單尚未進行過結帳，請先前往付款'
+    });
+  }
+
+  let result;
+  try {
+    result = await ecpayService.queryTradeInfo(order.merchant_trade_no);
+  } catch (e) {
+    return res.status(502).json({
+      data: null,
+      error: 'ECPAY_QUERY_FAILED',
+      message: '查詢綠界付款狀態失敗，請稍後再試'
+    });
+  }
+
+  if (result.tradeStatus === '1') {
+    db.prepare(
+      `UPDATE orders SET status = 'paid', ecpay_trade_no = ?, payment_method = ?, paid_at = datetime('now')
+       WHERE id = ?`
+    ).run(result.tradeNo, result.paymentType, order.id);
+  } else if (result.tradeStatus !== '0') {
+    db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('failed', order.id);
+  }
+  // tradeStatus === '0'：尚未付款，維持 pending，不更動
+
+  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
+  const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+
+  res.json({
+    data: { ...updated, items },
+    error: null,
+    message: '成功'
   });
 });
 

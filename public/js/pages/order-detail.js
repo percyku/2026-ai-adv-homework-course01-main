@@ -11,6 +11,7 @@ createApp({
     const order = ref(null);
     const loading = ref(true);
     const paying = ref(false);
+    const confirming = ref(false);
 
     const statusMap = {
       pending: { label: '待付款', cls: 'bg-apricot/20 text-apricot' },
@@ -24,30 +25,56 @@ createApp({
       cancel: { text: '付款已取消。', cls: 'bg-apricot/10 text-apricot border border-apricot/20' },
     };
 
-    async function simulatePay(action) {
+    async function goToPayment() {
       if (!order.value || paying.value) return;
       paying.value = true;
       try {
-        const res = await apiFetch('/api/orders/' + order.value.id + '/pay', {
-          method: 'PATCH',
-          body: JSON.stringify({ action })
-        });
-        order.value = res.data;
-        paymentResult.value = action === 'success' ? 'success' : 'failed';
+        const res = await apiFetch('/api/orders/' + order.value.id + '/checkout', { method: 'POST' });
+        const { actionUrl, params } = res.data;
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = actionUrl;
+        for (const [key, value] of Object.entries(params)) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = key;
+          input.value = value;
+          form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
       } catch (e) {
-        Notification.show('付款處理失敗', 'error');
-      } finally {
+        Notification.show('建立付款失敗', 'error');
         paying.value = false;
       }
     }
 
-    function handlePaySuccess() { simulatePay('success'); }
-    function handlePayFail() { simulatePay('fail'); }
+    async function confirmPayment() {
+      if (!order.value || confirming.value) return;
+      confirming.value = true;
+      try {
+        const res = await apiFetch('/api/orders/' + order.value.id + '/confirm-payment', { method: 'POST' });
+        order.value = res.data;
+        if (order.value.status === 'paid') {
+          paymentResult.value = 'success';
+        } else if (order.value.status === 'failed') {
+          paymentResult.value = 'failed';
+        }
+      } catch (e) {
+        Notification.show('查詢付款狀態失敗', 'error');
+      } finally {
+        confirming.value = false;
+      }
+    }
 
     onMounted(async function () {
       try {
         const res = await apiFetch('/api/orders/' + orderId);
         order.value = res.data;
+        if (order.value.status === 'pending' && order.value.merchant_trade_no) {
+          await confirmPayment();
+        }
       } catch (e) {
         Notification.show('載入訂單失敗', 'error');
       } finally {
@@ -55,6 +82,9 @@ createApp({
       }
     });
 
-    return { order, loading, paying, paymentResult, statusMap, paymentMessages, handlePaySuccess, handlePayFail };
+    return {
+      order, loading, paying, confirming, paymentResult,
+      statusMap, paymentMessages, goToPayment, confirmPayment
+    };
   }
 }).mount('#app');

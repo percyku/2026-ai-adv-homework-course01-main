@@ -16,6 +16,7 @@ backend-project/public/css/output.css
 .env
 .env.*
 !.env.example
+.ask.txt
 
 # OS files
 .DS_Store

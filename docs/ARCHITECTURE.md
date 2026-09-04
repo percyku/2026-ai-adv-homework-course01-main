@@ -17,13 +17,18 @@
 │   │   ├── adminMiddleware.js  # 檢查 req.user.role === 'admin'（必須接在 authMiddleware 之後）
 │   │   ├── sessionMiddleware.js# 讀取 X-Session-Id header，掛 req.sessionId（全域套用，非強制）
 │   │   └── errorHandler.js     # 統一錯誤處理，5xx 隱藏內部訊息，僅回傳白名單安全訊息
+│   ├── utils/
+│   │   └── ecpayCrypto.js      # 綠界 ECPay CheckMacValue 簽章（SHA256）產生與驗證，純用內建 crypto
+│   ├── services/
+│   │   └── ecpayService.js     # 綠界 ECPay：組裝 AIO 付款表單參數（buildCheckoutParams）、主動查詢交易狀態（queryTradeInfo，呼叫 QueryTradeInfo/V5）
 │   └── routes/
 │       ├── authRoutes.js         # /api/auth/*：register、login、profile
 │       ├── productRoutes.js      # /api/products/*：公開瀏覽（分頁清單、詳情）
 │       ├── cartRoutes.js         # /api/cart/*：雙模式認證（JWT 或 X-Session-Id）購物車 CRUD
-│       ├── orderRoutes.js        # /api/orders/*：需登入；建立訂單（transaction）、清單、詳情、模擬付款
+│       ├── orderRoutes.js        # /api/orders/*：需登入；建立訂單（transaction）、清單、詳情、模擬付款（開發用，前端已不呼叫）、ECPay 結帳表單產生、主動查詢付款狀態
 │       ├── adminProductRoutes.js # /api/admin/products/*：需 admin；商品 CRUD
 │       ├── adminOrderRoutes.js   # /api/admin/orders/*：需 admin；訂單清單（可篩選狀態）、詳情
+│       ├── ecpayRoutes.js        # /api/ecpay/*：無需登入；接收綠界 Server Notify（本機開發環境無法被觸及，見下方「金流／第三方整合」）
 │       └── pageRoutes.js         # 前台/後台頁面路由（EJS render），不回傳 JSON
 ├── views/
 │   ├── layouts/
@@ -58,7 +63,7 @@ node server.js
       → cors({ origin: FRONTEND_URL })
       → express.json() / express.urlencoded()
       → sessionMiddleware                            // 全域掛載，解析 X-Session-Id
-      → 掛載 6 組 API 路由 + 1 組頁面路由（見下方路由總覽）
+      → 掛載 7 組 API 路由 + 1 組頁面路由（見下方路由總覽）
       → 404 handler（API 回 JSON，頁面回 404.ejs）
       → errorHandler（最終 4 個參數的 Express error middleware）
   → 若直接執行本檔（require.main === module）：
@@ -76,12 +81,13 @@ node server.js
 | `POST/GET /api/auth/*` | `authRoutes.js` | 部分公開，`profile` 需 `authMiddleware` | 註冊、登入、取得個人資料 |
 | `GET /api/products`、`GET /api/products/:id` | `productRoutes.js` | 公開 | 商品清單（分頁）、商品詳情 |
 | `GET/POST/PATCH/DELETE /api/cart*` | `cartRoutes.js` | 路由內自訂 `dualAuth`（JWT **或** `X-Session-Id`） | 購物車增刪改查，訪客與登入會員共用邏輯 |
-| `POST/GET/PATCH /api/orders*` | `orderRoutes.js` | 全路由 `router.use(authMiddleware)` | 建立訂單、清單、詳情、模擬付款 |
+| `POST/GET/PATCH /api/orders*` | `orderRoutes.js` | 全路由 `router.use(authMiddleware)` | 建立訂單、清單、詳情、模擬付款（`PATCH /:id/pay`，開發用，前端已不再呼叫）、ECPay 結帳表單產生（`POST /:id/checkout`）、主動查詢付款狀態（`POST /:id/confirm-payment`） |
 | `GET/POST/PUT/DELETE /api/admin/products*` | `adminProductRoutes.js` | 全路由 `router.use(authMiddleware, adminMiddleware)` | 後台商品管理 |
 | `GET /api/admin/orders*` | `adminOrderRoutes.js` | 全路由 `router.use(authMiddleware, adminMiddleware)` | 後台訂單清單、詳情（唯讀，無狀態變更端點） |
+| `POST /api/ecpay/notify` | `ecpayRoutes.js` | 無（綠界 Server-to-Server 通知，非使用者請求，不掛 `authMiddleware`） | 接收綠界 AIO 付款結果通知，驗證 CheckMacValue 後冪等更新訂單狀態，回應純文字 `1\|OK`。**本機開發環境無法被綠界連線觸及**（`localhost` 無法對外公開），僅為未來部署到公開網域時的完整實作，本機測試流程不依賴此路由 |
 | `GET /`、`/products/:id`、`/cart`、`/checkout`、`/login`、`/orders`、`/orders/:id`、`/admin/products`、`/admin/orders` | `pageRoutes.js` | 無伺服器端保護；頁面載入後由前端 `Auth.requireAuth()`/`requireAdmin()` 導頁 | 回傳 EJS 渲染的 HTML 頁面骨架 |
 
-掛載順序（見 `app.js`）：`auth → admin/products → admin/orders → products → cart → orders → 頁面路由`。因為 Express 路由是精確前綴比對（`app.use('/api/admin/products', ...)` 與 `app.use('/api/products', ...)` 前綴不重疊），順序本身不影響比對結果，但維持此順序有助於閱讀（先 auth，再 admin 專用，再一般用戶）。
+掛載順序（見 `app.js`）：`auth → admin/products → admin/orders → products → cart → orders → ecpay → 頁面路由`。因為 Express 路由是精確前綴比對（`app.use('/api/admin/products', ...)` 與 `app.use('/api/products', ...)` 前綴不重疊），順序本身不影響比對結果，但維持此順序有助於閱讀（先 auth，再 admin 專用，再一般用戶，最後是不需認證的第三方 callback）。
 
 **重要**：後台頁面路由（`/admin/products`、`/admin/orders`）與後台 API 一樣掛在 `authMiddleware/adminMiddleware` 之下的錯覺容易誤導——實際上 `pageRoutes.js` **完全沒有**伺服器端的權限檢查，僅回傳靜態 HTML 殼；真正的權限守門是 `views/layouts/admin.ejs` 內嵌 `<script>` 呼叫 `Auth.requireAdmin()`（純前端、依賴 localStorage 中的 JWT payload 解出的 `role`）。這代表**頁面本身可被未授權者直接開啟並看到骨架**，只是骨架的 Vue app 會在 `onMounted`/`setup()` 開頭因 `Auth.requireAuth()`/`requireAdmin()` 失敗而導頁、資料不會被載入。若日後要強化，需在 `pageRoutes.js` 對應路由加上伺服器端 middleware。
 
@@ -107,7 +113,7 @@ node server.js
 }
 ```
 
-`error` 欄位在各路由中手動指定的字串值（非集中管理的錯誤碼枚舉），實際出現過的值：`VALIDATION_ERROR`、`UNAUTHORIZED`、`FORBIDDEN`、`NOT_FOUND`、`CONFLICT`、`STOCK_INSUFFICIENT`、`CART_EMPTY`、`INVALID_STATUS`；未攔截的例外會落入 `errorHandler.js`，一律回傳 `error: 'INTERNAL_ERROR'`（即使實際 HTTP 狀態碼不是 500，`errorHandler` 對所有情況都硬編碼回傳字串 `'INTERNAL_ERROR'` 作為 `error` 欄位——這是與各路由手動 `error` 值不一致之處，見下方「已知不一致」）。
+`error` 欄位在各路由中手動指定的字串值（非集中管理的錯誤碼枚舉），實際出現過的值：`VALIDATION_ERROR`、`UNAUTHORIZED`、`FORBIDDEN`、`NOT_FOUND`、`CONFLICT`、`STOCK_INSUFFICIENT`、`CART_EMPTY`、`INVALID_STATUS`、`NOT_CHECKED_OUT`（`confirm-payment` 時訂單尚未走過 `checkout`）、`ECPAY_QUERY_FAILED`（呼叫綠界 `QueryTradeInfo` 失敗或 CheckMacValue 驗證不符）；未攔截的例外會落入 `errorHandler.js`，一律回傳 `error: 'INTERNAL_ERROR'`（即使實際 HTTP 狀態碼不是 500，`errorHandler` 對所有情況都硬編碼回傳字串 `'INTERNAL_ERROR'` 作為 `error` 欄位——這是與各路由手動 `error` 值不一致之處，見下方「已知不一致」）。
 
 分頁清單類端點（`GET /api/products`、`GET /api/admin/products`、`GET /api/admin/orders`）額外在 `data` 中包一層 `pagination`：
 
@@ -213,9 +219,13 @@ node server.js
 | `recipient_name` / `recipient_email` / `recipient_address` | TEXT | 皆 NOT NULL |
 | `total_amount` | INTEGER | NOT NULL（下單當下由購物車項目加總計算，非即時計算欄位） |
 | `status` | TEXT | NOT NULL DEFAULT `'pending'`，CHECK `IN ('pending', 'paid', 'failed')` |
+| `merchant_trade_no` | TEXT | 可為 NULL，呼叫 `POST /:id/checkout` 前為 NULL。送給綠界的 `MerchantTradeNo`（`T${Date.now()}`，英數字、≤20 碼）。每次呼叫 `checkout` 都會**重新產生並覆寫**，允許同一筆訂單多次重新導向付款（例如上次交易未成立或使用者中途放棄） |
+| `ecpay_trade_no` | TEXT | 可為 NULL，僅在 `confirm-payment` 查得 `TradeStatus === '1'`（已付款）時寫入綠界回傳的 `TradeNo` |
+| `payment_method` | TEXT | 可為 NULL，同上時機寫入，例如 `Credit_CreditCard`（見 `PaymentType` 回覆值，實際依消費者選擇的付款方式而定） |
+| `paid_at` | TEXT | 可為 NULL，同上時機以 `datetime('now')` 寫入，是目前 `orders` 表**唯一**會記錄「狀態變更時間」的欄位 |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-無 `updated_at` 欄位（狀態變更如付款不會記錄變更時間）。
+無 `updated_at` 欄位（除了 `paid_at` 專門記錄付款確認時間，其餘狀態變更如 `failed` 不會記錄變更時間）。
 
 ### `order_items`
 
@@ -231,4 +241,35 @@ node server.js
 
 ## 金流／第三方整合
 
-`.env.example` 中列有 `ECPAY_MERCHANT_ID`、`ECPAY_HASH_KEY`、`ECPAY_HASH_IV`、`ECPAY_ENV` 四個綠界金流（ECPay）相關變數，**但目前程式碼庫中沒有任何一處讀取或使用這些變數**（`grep` 全專案找不到 `ECPAY`/`ecpay` 字樣出現在 `.js` 檔中）。實際的付款流程是 `PATCH /api/orders/:id/pay` 的**模擬付款**：前端 `order-detail.js` 呼叫此端點並帶 `{ action: 'success' | 'fail' }`，後端直接依 `action` 將訂單 `status` 改為 `paid` 或 `failed`，沒有任何外部金流串接、簽章驗證或 callback/webhook 處理。若日後要接入真正的 ECPay，這些環境變數是預留位置，需要新增對應的路由（可能是 `POST /api/orders/:id/checkout` 產生綠界表單、以及一支處理 ECPay callback 的公開端點）與簽章驗證邏輯，此為目前系統的空白區塊，不是既有功能。
+已串接綠界 ECPay **AIO 全方位金流**（CMV-SHA256 協定），取代原本 `PATCH /api/orders/:id/pay` 的模擬付款（該端點程式碼仍保留於 `orderRoutes.js`，但前端 `order-detail.js` 已不再呼叫，純屬開發期遺留的手動測試工具）。
+
+### 架構限制：本機環境無法接收 Server Notify
+
+本專案僅在 `localhost` 執行、無法對外公開，因此綠界標準的 Server-to-Server `ReturnURL` callback **永遠打不到本機**。因此付款結果確認採用「本地端主動查詢」架構，而非被動等待 callback：
+
+1. `POST /api/orders/:id/checkout` 產生 ECPay 付款表單參數，**其中仍依規格帶上 `ReturnURL`**（`${BASE_URL}/api/ecpay/notify`），但這支路由在本機測試時綠界連不進來，純粹是為了未來部署到公開網域時架構已經完整；本機測試流程完全不依賴它是否被觸發。
+2. `ClientBackURL`（`${FRONTEND_URL}/orders/:id`）是**消費者瀏覽器**的重導向而非 server-to-server，`localhost` 完全可行，付款完成後會把使用者導回訂單詳情頁。
+3. 訂單詳情頁載入時（`public/js/pages/order-detail.js` 的 `onMounted`），若訂單為 `pending` 且已有 `merchant_trade_no`，會自動呼叫一次 `POST /api/orders/:id/confirm-payment`；使用者也可以手動點「重新查詢付款狀態」按鈕再次觸發。這支端點由**後端主動呼叫綠界 `QueryTradeInfo` API** 查詢真實交易狀態並更新訂單，是「本地端主動查詢驗證」的實際落地。
+
+### 相關檔案
+
+- `src/utils/ecpayCrypto.js` — `ecpayUrlEncode`（ECPay 專屬 URL encode：`encodeURIComponent` → 轉小寫 → .NET 字元還原）、`generateCheckMacValue`（SHA256，排序後串接 `HashKey=...&...&HashIV=...` 再雜湊、轉大寫）、`verifyCheckMacValue`（`crypto.timingSafeEqual` 做 timing-safe 比對，長度不同時提前短路避免拋錯）。純用內建 `crypto`，未加任何新依賴。
+- `src/services/ecpayService.js`：
+  - `buildCheckoutParams(order, orderItems)` — 組出送往 `Cashier/AioCheckOut/V5` 的完整表單參數（含 `CheckMacValue`），並回傳 `{ actionUrl, params, merchantTradeNo }`。`MerchantTradeDate` 以 `Asia/Taipei` 時區格式化；`ItemName` 由 `orderItems` 的 `product_name` 以 `#` 串接並截斷至 200 字元。
+  - `queryTradeInfo(merchantTradeNo)` — 用 Node 內建全域 `fetch`（**需要 Node 18+**，專案未加 axios/node-fetch 之類依賴）POST 到 `Cashier/QueryTradeInfo/V5`，回應是 URL-encoded 字串（非 JSON），以 `new URLSearchParams(text)` 解析後**驗證回應的 `CheckMacValue`**，通過才回傳 `{ tradeStatus, tradeNo, paymentType, tradeAmt, paymentDate }`；驗證失敗或 HTTP 非 2xx 一律 `throw`。
+- `src/routes/orderRoutes.js` 新增兩個端點（皆在既有 `router.use(authMiddleware)` 保護下）：
+  - `POST /:id/checkout` — 訂單須存在、屬於自己、且 `status !== 'paid'`（`pending`/`failed` 皆可重新結帳）。呼叫 `buildCheckoutParams` 後把新產生的 `merchant_trade_no` 寫回該筆訂單，回傳 `{ actionUrl, params }` 給前端組表單、`form.submit()` 整頁跳轉到綠界（**不可用 `fetch`/`iframe`**，ECPay 付款頁會被瀏覽器的 `X-Frame-Options`/CSP 政策封鎖）。
+  - `POST /:id/confirm-payment` — 訂單須存在、屬於自己、且已有 `merchant_trade_no`（沒有則 400 `NOT_CHECKED_OUT`，代表還沒走過 `checkout`）。呼叫 `queryTradeInfo` 失敗則 502 `ECPAY_QUERY_FAILED`；成功時依 `TradeStatus` 更新：`'1'` → `paid`（同時寫入 `ecpay_trade_no`/`payment_method`/`paid_at`）、`'0'` → 維持 `pending`（尚未付款，允許稍後再查）、其他值（如 `10200095` 交易未成立）→ `failed`。
+- `src/routes/ecpayRoutes.js` + `app.js` 的 `app.use('/api/ecpay', ...)` — `POST /notify`，**不掛 `authMiddleware`**（綠界呼叫不會帶 JWT）。驗證 `CheckMacValue` 後依 `MerchantTradeNo` 找到訂單並以 `UPDATE`（非 `INSERT`）冪等更新狀態，最後一律回應純文字 `1|OK`（即使驗證失敗也要回，避免綠界持續重試）。如前述，本機環境這支路由不會被觸發。
+
+### 付款方式限制（`ChoosePayment` / `IgnorePayment`）
+
+`buildCheckoutParams` 目前設定 `ChoosePayment: 'ALL'` 搭配 `IgnorePayment: 'ATM#CVS#BARCODE#ApplePay#TWQR#BNPL#WeiXin'`——因為 ECPay AIO 的 `ChoosePayment` 一次只能指定單一付款方式或 `ALL`（顯示付款方式選擇頁），要同時提供「信用卡＋網路 ATM（WebATM）」給消費者自選，只能用 `ALL` 再以 `IgnorePayment` 排除不需要的方式。`DigitalPayment`（電子支付/電子錢包）依官方規格**無法**透過 `IgnorePayment` 排除，若特店帳號有開通仍可能出現在付款頁上。
+
+### 已知偏差：`SimulatePaid` 在共用測試帳號上不可用
+
+官方文件記載測試環境可在建單參數加 `SimulatePaid=1` 略過刷卡，直接模擬付款成功（本地開發免刷卡的官方建議路徑）。但實測發現**共用測試帳號 `3002607` 送出 `SimulatePaid=1` 會被綠界正式伺服器拒絕**，回應 `10100050 Parameter Error`，推測該公開帳號未開通此功能。因此最終實作**未使用 `SimulatePaid`**，一律導向真實付款收銀台；本機測試時需用官方測試卡 `4311-9522-2222-2222`（任意 3 碼安全碼、任意未來到期日）＋ 3D 驗證碼 `1234` 完成付款。
+
+### 環境變數
+
+`ECPAY_MERCHANT_ID`/`ECPAY_HASH_KEY`/`ECPAY_HASH_IV` 直接對應綠界共用測試帳號；`ECPAY_ENV` 僅在等於 `'production'` 時切換 `AIO_BASE_URL` 為正式環境網域（`payment.ecpay.com.tw`），其餘任何值（含未設定）一律視為測試環境（`payment-stage.ecpay.com.tw`）。`BASE_URL`（組出 `ReturnURL`）與 `FRONTEND_URL`（組出 `ClientBackURL`，同時也是既有的 CORS 允許來源）現在**皆有實際用途**，不再是純預留變數（詳見 DEVELOPMENT.md 環境變數表）。

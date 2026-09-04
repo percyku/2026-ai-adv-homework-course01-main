@@ -54,12 +54,13 @@
 |---|---|---|---|
 | `JWT_SECRET` | 簽發/驗證 JWT 的密鑰 | **必要**（`server.js` 啟動時強制檢查，未設定直接 `process.exit(1)`） | 無，`.env.example` 提供佔位字串 `your-jwt-secret-key-here` |
 | `PORT` | Express 監聽埠 | 選填 | `3001` |
-| `BASE_URL` | 目前程式碼未讀取此變數（僅存在於 `.env.example`，供未來如產生絕對連結／ECPay callback URL 使用） | 選填 | `http://localhost:3001` |
-| `FRONTEND_URL` | CORS 允許的來源（`cors({ origin })`） | 選填 | `http://localhost:3001`（注意：`app.js` 內程式碼預設值是 `3001`，與 `.env.example` 標示的 `5173` 不同，實務上此專案前後台同源、多半不需要另外指定） |
+| `BASE_URL` | 組成 ECPay `ReturnURL`（`src/services/ecpayService.js` 的 `buildCheckoutParams`）；本機開發時此 URL 對綠界不可達，僅為未來部署到公開網域預留 | 選填 | `http://localhost:3001` |
+| `FRONTEND_URL` | CORS 允許的來源（`cors({ origin })`），同時組成 ECPay `ClientBackURL`（消費者付款後導回的訂單詳情頁） | 選填 | `http://localhost:3001`（注意：`app.js` 內程式碼預設值是 `3001`，與 `.env.example` 標示的 `5173` 不同，實務上此專案前後台同源、多半不需要另外指定） |
 | `ADMIN_EMAIL` | 首次啟動 seed 管理員帳號的 email | 選填 | `admin@hexschool.com` |
 | `ADMIN_PASSWORD` | 首次啟動 seed 管理員帳號的密碼 | 選填 | `12345678` |
 | `NODE_ENV` | 一般 Node 慣例；本專案唯一讀取處是 `src/database.js` 用來決定 bcrypt salt rounds（`test` → 1 round 加速測試，其他 → 10 rounds） | 選填 | 未設定（Vitest 執行時預設會設為 `test`） |
-| `ECPAY_MERCHANT_ID` / `ECPAY_HASH_KEY` / `ECPAY_HASH_IV` / `ECPAY_ENV` | **預留**給未來的綠界金流串接，目前程式碼完全未讀取 | 選填（目前無作用） | 見 `.env.example`（測試用假值） |
+| `ECPAY_MERCHANT_ID` / `ECPAY_HASH_KEY` / `ECPAY_HASH_IV` | 綠界 ECPay AIO 金流的特店編號與 CheckMacValue 簽章密鑰，由 `src/services/ecpayService.js` 讀取。**正式環境務必改用環境變數管理，不可寫入版本控制**（`.env.example` 中為官方公開測試值） | 選填（未設定時 `CheckMacValue` 會用 `undefined` 計算，導致所有 ECPay 請求簽章錯誤） | 見 `.env.example`（測試用假值 `3002607`／`pwFHCqoQZGmho4w6`／`EkRm7iFT261dpevs`） |
+| `ECPAY_ENV` | 切換 ECPay AIO 端點網域，`src/services/ecpayService.js` 僅在此值**恰好等於** `'production'` 時使用正式環境 `payment.ecpay.com.tw`，其餘任何值（含未設定）一律視為測試環境 `payment-stage.ecpay.com.tw` | 選填 | `staging`（測試環境） |
 
 新增環境變數時務必同步更新 `.env.example` 並在此表補上一列，說明用途與是否有預設值 fallback。
 
@@ -99,7 +100,7 @@ router.get('/:id', (req, res) => { /* ... */ });
 ```
 
 規則：
-- `tags` 依模組分類，沿用既有標籤：`Auth`、`Products`、`Cart`、`Orders`、`Admin Products`、`Admin Orders`。新模組請新增對應標籤，勿混用既有標籤。
+- `tags` 依模組分類，沿用既有標籤：`Auth`、`Products`、`Cart`、`Orders`、`Admin Products`、`Admin Orders`、`Ecpay`（`ecpayRoutes.js` 的綠界 callback，`orderRoutes.js` 內的 ECPay 結帳/查詢端點仍歸在 `Orders`）。新模組請新增對應標籤，勿混用既有標籤。
 - 需要認證的端點加 `security: [{ bearerAuth: [] }]`（JWT）；購物車雙模式端點加兩個選項 `security: [{ bearerAuth: [] }, { sessionId: [] }]`（`securitySchemes` 定義於 `swagger-config.js`）。
 - `responses` 至少列出成功狀態碼與所有會回傳的錯誤狀態碼（400/401/403/404/409 依實際 handler 邏輯列出），維持與 handler 內 `res.status(...)` 呼叫一致。
 - 修改或新增端點後執行 `npm run openapi` 重新產生 `openapi.json`，確認沒有 YAML 縮排錯誤（`swagger-jsdoc` 對縮排敏感，錯誤時通常靜默略過該區塊而非報錯，需目視比對輸出）。

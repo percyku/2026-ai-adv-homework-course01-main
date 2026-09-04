@@ -6,7 +6,7 @@
 
 | 分類 | 技術 | 版本 | 說明 |
 |---|---|---|---|
-| Runtime | Node.js + Express | express `~4.16.1` | Web 伺服器與路由框架 |
+| Runtime | Node.js + Express | express `~4.16.1` | Web 伺服器與路由框架。**需要 Node.js 18+**：`src/services/ecpayService.js` 呼叫綠界 `QueryTradeInfo` API 時使用 Node 內建全域 `fetch`，未額外安裝 axios/node-fetch 之類依賴 |
 | 資料庫 | SQLite (better-sqlite3) | `^12.8.0` | 同步、內嵌式 SQL 資料庫，WAL 模式 |
 | 認證 | jsonwebtoken + bcrypt | `^9.0.2` / `^6.0.0` | JWT 簽發驗證、密碼雜湊 |
 | 樣板引擎 | EJS | `^5.0.1` | 伺服器端頁面渲染（layout + partials） |
