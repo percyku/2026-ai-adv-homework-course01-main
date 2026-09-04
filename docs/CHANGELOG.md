@@ -14,6 +14,10 @@
   - 付款方式設定為 `ChoosePayment=ALL` + `IgnorePayment` 排除超商代碼／條碼／ATM 取號／Apple Pay／TWQR／BNPL／微信，讓消費者可自選信用卡或網路 ATM（WebATM）。
   - 新增 `tests/ecpayCrypto.test.js`，以 ECPay 官方公開測試向量驗證 CheckMacValue 簽章邏輯正確性；`checkout`／`confirm-payment`／`notify` 三個端點本身尚無自動化測試，待辦見 TESTING.md。
 
+### Fixed
+
+- `.env`/`.env.example` 的 `FRONTEND_URL` 原誤標為 `http://localhost:5173`，但本專案無獨立前端 dev server，實際由 Express 於 `3001` port 服務。這使得 ECPay `ClientBackURL`（付款完成後「返回商店」按鈕）導向不存在的服務，出現「無法連上這個網站」。已改為 `http://localhost:3001`；已修正前建立的訂單不受影響（需重新結帳才會套用新網址）。
+
 ### 已知限制
 
 - 官方文件記載測試環境可在建單參數加 `SimulatePaid=1` 略過刷卡直接完成模擬付款，但實測共用測試帳號 `3002607` 對此參數回傳 `10100050 Parameter Error`（該帳號未開通此功能），因此未採用；本機測試需用官方測試卡 `4311-9522-2222-2222` 走完整刷卡流程。

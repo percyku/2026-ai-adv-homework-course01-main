@@ -55,7 +55,7 @@
 | `JWT_SECRET` | 簽發/驗證 JWT 的密鑰 | **必要**（`server.js` 啟動時強制檢查，未設定直接 `process.exit(1)`） | 無，`.env.example` 提供佔位字串 `your-jwt-secret-key-here` |
 | `PORT` | Express 監聽埠 | 選填 | `3001` |
 | `BASE_URL` | 組成 ECPay `ReturnURL`（`src/services/ecpayService.js` 的 `buildCheckoutParams`）；本機開發時此 URL 對綠界不可達，僅為未來部署到公開網域預留 | 選填 | `http://localhost:3001` |
-| `FRONTEND_URL` | CORS 允許的來源（`cors({ origin })`），同時組成 ECPay `ClientBackURL`（消費者付款後導回的訂單詳情頁） | 選填 | `http://localhost:3001`（注意：`app.js` 內程式碼預設值是 `3001`，與 `.env.example` 標示的 `5173` 不同，實務上此專案前後台同源、多半不需要另外指定） |
+| `FRONTEND_URL` | CORS 允許的來源（`cors({ origin })`），同時組成 ECPay `ClientBackURL`（消費者付款後導回的訂單詳情頁） | 選填 | `http://localhost:3001`（此專案無獨立前端 dev server，前後台同源皆由 Express 於 `PORT`/`BASE_URL` 服務；`.env.example` 曾誤標為 `5173`，會導致 ECPay 付款完成後「返回商店」按鈕連到不存在的服務，已修正為 `3001`） |
 | `ADMIN_EMAIL` | 首次啟動 seed 管理員帳號的 email | 選填 | `admin@hexschool.com` |
 | `ADMIN_PASSWORD` | 首次啟動 seed 管理員帳號的密碼 | 選填 | `12345678` |
 | `NODE_ENV` | 一般 Node 慣例；本專案唯一讀取處是 `src/database.js` 用來決定 bcrypt salt rounds（`test` → 1 round 加速測試，其他 → 10 rounds） | 選填 | 未設定（Vitest 執行時預設會設為 `test`） |

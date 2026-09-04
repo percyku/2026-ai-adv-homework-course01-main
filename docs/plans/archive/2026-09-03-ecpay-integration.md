@@ -68,3 +68,4 @@ callback 永遠打不到 `localhost`，因此付款結果的確認流程必須�
 - [x] 對真實 ECPay stage API 端對端驗證：`checkout` 產生的參數被綠界正常接受（回傳真實信用卡收銀台頁）；`confirm-payment` 對真實交易查詢，`CheckMacValue` 驗證通過且 `TradeStatus` 正確對應訂單狀態（含未付款維持 `pending`、交易未成立正確標記 `failed` 兩種情境）
 - [x] 手動瀏覽器驗證：使用者實際用測試卡＋3D 驗證碼 `1234` 完整刷一次卡，確認導回訂單詳情頁後自動顯示「付款成功」畫面
 - [x] 依使用者回饋，付款方式新增網路 ATM（WebATM）：`ChoosePayment` 改為 `'ALL'` + `IgnorePayment: 'ATM#CVS#BARCODE#ApplePay#TWQR#BNPL#WeiXin'`，只保留信用卡與網路 ATM 給消費者選；已用真實 ECPay stage API 驗證參數被正常接受（回傳付款方式選擇頁，非錯誤頁）
+- [x] 事後修正（2026-09-04）：`.env`/`.env.example` 的 `FRONTEND_URL` 原誤標為 `http://localhost:5173`，但本專案無獨立前端 dev server，網站（含訂單詳情頁）實際由 Express 於 `3001` port 提供。導致 `ClientBackURL` 組出無服務回應的網址，使用者付款完成後點「返回商店」出現「無法連上這個網站」。已改為 `http://localhost:3001`；`docs/DEVELOPMENT.md` 環境變數表同步修正。**注意：此修正僅對修正後新建立的訂單生效**，已送出綠界的舊訂單其 `ClientBackURL` 已固定，需重新走一次付款流程才能驗證。

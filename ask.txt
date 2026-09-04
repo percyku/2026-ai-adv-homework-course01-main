@@ -1,0 +1,20 @@
+請參考專案中的綠界 ECPay skill ，協助串接金流功能．
+
+目前專案裡面已經包括：
+1.商品
+2.加入購物車
+3.結帳流程
+
+請在這個流程中加入綠界金流的串接，並確保可以付款成功
+
+本專案僅運行於本地端，無法接收綠界的伺服器回傳（Server Notify），
+因此付款結果的確認流程需改為由本地端主動呼叫綠界查詢 API 進行驗證，請依此架構實作。
+
+可以幫我把剛剛plan mode 產出的計劃存到 ./docs/plans 資料夾內
+請把計劃
+
+
+我發現付款成功後，會導入到以下連結，
+https://payment-stage.ecpay.com.tw/bank/PaymentCenter/cntnotlogin/webatm/result
+但該頁面的"返回商店"按鈕會出錯，如下連結，會出現無法連上這個網站
+http://localhost:5173/orders/f9056a58-cc4b-4aa9-976c-fb6b30d52a83
